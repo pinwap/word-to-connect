@@ -1,0 +1,13 @@
+[project]
+name = "word-to-connect"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pyaudio>=0.2.14",
+    "pythainlp>=5.3.4",
+    "python-crfsuite>=0.9.12",
+    "speechrecognition>=3.16.1",
+    "streamlit>=1.57.0",
+]
