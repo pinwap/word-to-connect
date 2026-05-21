@@ -1,6 +1,5 @@
 import sqlite3
 import os
-from sre_constants import SUCCESS
 from pythainlp.tokenize import word_tokenize, syllable_tokenize
 from pythainlp.tag import pos_tag
 
@@ -29,10 +28,21 @@ def init_db():
             FOREIGN KEY (word_id) REFERENCES words(id)
         )
     ''')
+    
+    # ตารางเก็บคะแนน
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS players (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            score INTEGER,
+            status TEXT DEFAULT 'ALIVE' -- สถานะผู้เล่น (ALIVE, ELIMINATED, WINNER)
+        )
+    ''')
 
     con.commit()
     con.close()
 
+# ---------- คำศัพท์ ----------
 def check_and_save(word, syllables):
     # เช็คว่าคำนามไหม
     if word.startswith("การ") or word.startswith("ความ"): 
@@ -81,16 +91,19 @@ def check_and_save(word, syllables):
     
     con.commit()
     con.close()
-    return SUCCESS, []
-    
-def clear_db():
+    return "SUCCESS", []
+
+def force_save(word, syllables):
+    # ให้ moderator ตัดสินว่าคำนั้นถูกไหม
     with sqlite3.connect(DB_PATH) as con:
-        cursor = con.cursor()
-        cursor.execute('DELETE FROM syllables')
-        cursor.execute('DELETE FROM words')
-        cursor.execute('DELETE FROM sqlite_sequence WHERE name="words"') # รีเซ็ต auto-increment ของ words
-        cursor.execute('DELETE FROM sqlite_sequence WHERE name="syllables"') # รีเซ็ต auto-increment ของ syllables
-    con.close()
+        cur = con.cursor()
+        cur.execute('INSERT OR IGNORE INTO words (word_text) VALUES (?)', (word,))
+        cur.execute('SELECT id FROM words WHERE word_text = ?', (word,))
+        word_id = cur.fetchone()[0]
+        
+        for syl in syllables:
+            cur.execute('INSERT INTO syllables (word_id, syllable_text) VALUES (?, ?)', (word_id, syl))
+        con.commit()
     
 def get_all_words():
     with sqlite3.connect(DB_PATH) as con:
@@ -107,4 +120,81 @@ def update_word(word_id, new_word, new_syllables):
         # เพิ่มพยางค์ใหม่
         for syl in new_syllables:
             cursor.execute('INSERT INTO syllables (word_id, syllable_text) VALUES (?, ?)', (word_id, syl))
+        con.commit()
+
+def delete_word(word_id):
+    with sqlite3.connect(DB_PATH) as con:
+        cursor = con.cursor()
+        cursor.execute('DELETE FROM words WHERE id = ?', (word_id,))
+        cursor.execute('DELETE FROM syllables WHERE word_id = ?', (word_id,))
+        con.commit()
+    
+# ---------- ผู้เล่น ----------
+def add_player(name):
+    try:
+        with sqlite3.connect(DB_PATH) as con:
+            cursor = con.cursor()
+            cursor.execute('INSERT INTO players (name) VALUES (?)', (name.strip(),))
+            con.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False # ชื่อซ้ำ
+
+def get_all_players():
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute('SELECT id, name, score, status FROM players ORDER BY id ASC')
+        return cur.fetchall()
+    
+def get_alive_player():
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute('SELECT id, name, score FROM players WHERE status = "ALIVE"')
+        return cur.fetchall()
+
+def add_point(player_id, points):
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute('UPDATE players SET score = score + ? WHERE id = ?', (points, player_id))
+        con.commit()
+
+def eliminate_player(player_id):
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.cursor()
+        cur.execute('UPDATE players SET status = "ELIMINATED" WHERE id = ?', (player_id,))
+        con.commit()
+        
+def killed_check_score(player_id,top,top_point,winner_point):
+    eliminate_player(player_id)
+    alive_players = get_alive_player()
+    
+    if(len(alive_players)==top):
+        for p_id,_,p_score in alive_players:
+            add_point(p_id, top_point)
+        return f"TOP {top}:", alive_players
+    elif(len(alive_players)==1):
+        winner_id, winner_name, winner_score = alive_players[0]
+        add_point(winner_id, winner_point)
+        return f"WINNER: {winner_name}", alive_players
+    return f"CONTINUED:", alive_players
+        
+# -------- clear ----------
+def reset_game_round():
+    # เริ่มเกมใหม่ รีเซ็ตสถานะทุกคน แต่เก็บคะแนนสะสมไว้
+    with sqlite3.connect(DB_PATH) as con:
+        cursor = con.cursor()
+        cursor.execute('DELETE FROM syllables')
+        cursor.execute('DELETE FROM words')
+        cursor.execute('DELETE FROM sqlite_sequence WHERE name IN ("words", "syllables")') # รีเซ็ต auto-increment ของ words และ syllables
+        cursor.execute('UPDATE players SET status = "ALIVE"') 
+        con.commit()
     con.close()
+    
+def clear_all_data():
+    # ลบทุกอย่างจริงๆ รวมผู้เล่นและคะแนน
+    reset_game_round()
+    with sqlite3.connect(DB_PATH) as con:
+        cursor = con.cursor()
+        cursor.execute('DELETE FROM players')
+        cursor.execute('DELETE FROM sqlite_sequence WHERE name = "players"') # รีเซ็ต auto-increment ของทุกตาราง
+        con.commit()
