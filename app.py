@@ -40,9 +40,49 @@ if "player_queue" not in st.session_state:
 if "current_turn_player" not in st.session_state:
     st.session_state.current_turn_player = None # ปักธงว่า ID ผู้เล่นไหนกำลังเล่นอยู่
 
+# --------------------------
+if st.session_state.paused:
+    st.warning("เกมหยุดชั่วคราวอยู่! กรุณากดปุ่ม 'resume' เพื่อเล่นต่อ")
+
+if st.session_state.game_alert:
+    st.success(f"ประกาศผล: {st.session_state.game_alert}")
+
+def handle_text_submit():
+    st.session_state.word_to_process = st.session_state.text_input_key # เอาคำที่พิมพ์มาเก็บใน session state
+    st.session_state.text_input_key = "" # เคลียร์ช่อง input หลัง submit
+  
 # ----------------------------------------
 #             players
 # ----------------------------------------
+alive_player = db.get_alive_player()
+player_dict = {p[0]: {"name": p[1], "score": p[2], "status": p[3]} for p in db.get_all_players()}
+alive_id = [p[0] for p in alive_player]
+
+if alive_id:
+    st.session_state.player_queue = [pid for pid in st.session_state.player_queue if pid in alive_id]
+    for pid in alive_id:
+        if pid not in st.session_state.player_queue:
+            st.session_state.player_queue.append(pid)
+
+  
+def sync_players_turn(shift = False):
+    if not st.session_state.player_queue:
+        return None
+    
+    if st.session_state.current_turn_player is None:
+        st.session_state.current_turn_player = 0
+        
+    # ถ้า shift=True ให้เลื่อนไปคนถัดไปในคิว
+    if shift:
+        st.session_state.current_turn_player = (st.session_state.current_turn_player + 1) % len(st.session_state.player_queue)
+    else:
+        st.session_state.current_turn_player %= len(st.session_state.player_queue)
+    
+    return st.session_state.player_queue[st.session_state.current_turn_player]
+
+active_player_id = sync_players_turn(shift=False) # เริ่มเกมให้คนแรกในคิวเล่นก่อน
+current_player_name = player_dict[active_player_id]["name"] if active_player_id else "Unknown"
+ 
 with st.sidebar:
     st.header('Players Board')
     # เพิ่มผู้เล่น
@@ -54,14 +94,34 @@ with st.sidebar:
             st.rerun()
     
     st.write("---")
-    st.subheader("คะแนนและสถานะผู้เล่น")
-    players = db.get_all_players()
-    if players:
-        for p_id, p_name, p_score, p_status in players:
-            if p_status == "ALIVE":
-                st.write(f"💚 **{p_name}** - คะแนน: {p_score}")
-            else:
-                st.write(f"💔 **{p_name}** - คะแนน: {p_score}")
+    st.subheader("ลำดับและคะแนนผู้เล่น")
+    st.caption("คนบนสุดคือคนแรก กดปุ่มลูกศรขึ้นลง เพื่อจัดอันดับคิว")
+       
+    if st.session_state.player_queue:
+        for idx, pid in enumerate(st.session_state.player_queue):
+            if pid in player_dict:
+                p = player_dict[pid]
+                
+                is_active = (pid == active_player_id)
+                st.markdown(f"{'💚' if is_active else ''}")
+     
+                col_name, col_up, col_down = st.columns([3, 1, 1])
+                with col_name:
+                    st.write(f"**{p['name']}** - คะแนน: {p['score']}") 
+                with col_up:
+                    if st.button("⬆️", key=f"up_{pid}") and idx > 0:
+                            st.session_state.player_queue[idx], st.session_state.player_queue[idx-1] = st.session_state.player_queue[idx-1], st.session_state.player_queue[idx]
+                            st.rerun()
+                with col_down:
+                    if st.button("⬇️", key=f"down_{pid}") and idx < len(st.session_state.player_queue) - 1:
+                            st.session_state.player_queue[idx], st.session_state.player_queue[idx+1] = st.session_state.player_queue[idx+1], st.session_state.player_queue[idx]
+                            st.rerun()
+        eliminated_players = [p for p in player_dict.values() if p["status"] == "ELIMINATED"]
+        if eliminated_players:
+                st.write("---")
+                st.caption("ผู้เล่นที่ถูกกำจัดแล้ว")
+                for p in eliminated_players:
+                    st.write(f"💔 **{p['name']}** - คะแนน: {p['score']}")
     else:
         st.info("ยังไม่มีผู้เล่นในระบบ")
     
@@ -72,12 +132,15 @@ with st.sidebar:
         db.reset_game_round()
         st.session_state.pending_action = None
         st.session_state.game_alert = None
+        st.session_state.current_turn_player = 0
         st.success("เริ่มรอบใหม่แล้ว! สถานะผู้เล่นถูกรีเซ็ต แต่คะแนนสะสมยังอยู่")
         st.rerun()
     if st.button("new game", use_container_width=True):
         db.clear_all_data()
         st.session_state.pending_action = None
         st.session_state.game_alert = None
+        st.session_state.player_queue = []
+        st.session_state.current_turn_player = None
         st.success("เริ่มเกมใหม่แล้ว! ข้อมูลทั้งหมดถูกลบและรีเซ็ต")
         st.rerun()
     if st.button("pause/resume", use_container_width=True):
@@ -86,71 +149,15 @@ with st.sidebar:
 
 st.write("---")
 
-if st.session_state.paused:
-    st.warning("เกมหยุดชั่วคราวอยู่! กรุณากดปุ่ม 'resume' เพื่อเล่นต่อ")
-
-if st.session_state.game_alert:
-    st.success(f"ประกาศผล: {st.session_state.game_alert}")
-
-def handle_text_submit():
-    st.session_state.word_to_process = st.session_state.text_input_key # เอาคำที่พิมพ์มาเก็บใน session state
-    st.session_state.text_input_key = "" # เคลียร์ช่อง input หลัง submit
-
-def sync_players_turn(shift = False):
-    alive_players = db.get_alive_player()
-    alive_id = [p[0] for p in alive_players]
-    
-    if not alive_id:
-        st.session_state.player_queue = []
-        return None
-    
-    # ตัดคนที่ตายออก
-    st.session_state.player_queue = [pid for pid in st.session_state.player_queue if pid in alive_id]
-    for pid in alive_id:
-        if pid not in st.session_state.player_queue:
-            st.session_state.player_queue.append(pid)
-    
-    # ถ้า shift=True ให้เลื่อนไปคนถัดไปในคิว
-    if shift and st.session_state.player_queue:
-        st.session_state.current_turn_player = (st.session_state.current_turn_player + 1) % len(st.session_state.player_queue) if st.session_state.current_turn_player is not None else 0
-    
-    if st.session_state.player_queue:
-        st.session_state.current_turn_player %= len(st.session_state.player_queue)
-        return st.session_state.player_queue[st.session_state.current_turn_player]
-    return None
-
-active_player_id = sync_players_turn(shift=False) # เริ่มเกมให้คนแรกในคิวเล่นก่อน
-
-st.subheader(f"ลำดับการเล่น")
-alive_player = db.get_alive_player()
-if alive_player:
-    player_dict = {p[0]: (p[1], p[2]) for p in alive_player} # id: (name, score)
-    
-    queue = [f"{player_dict[pid]}" if pid==active_player_id else player_dict[pid] 
-             for pid in st.session_state.player_queue if pid in player_dict]
-    st.markdown(" -> ".join(queue))
-    
-    col_rev, col_order = st.columns([1,2])
-    with col_rev:
-        if st.button("reverse", use_container_width=True):
-            st.session_state.player_queue.reverse()
-            st.session_state.current_turn_player = 0 # ปักธงให้คนแรกในคิวเล่นต่อ
-            st.rerun()
-    # จัดคิวเอง
-    with col_order:
-        options_map = {p[1]: p[0] for p in alive_player} # name: id
-        custom_order = st.multiselect("จัดลำดับผู้เล่นเอง (เลือกเรียงลำดับ 1->2->3):",
-                                        options=list(options_map.keys()),
-                                        default=[player_dict[pid] for pid in st.session_state.player_queue if pid in player_dict]
-                                        )
-        new_queue_ids = [options_map[name] for name in custom_order]
-        if new_queue_ids != st.session_state.player_queue and len(new_queue_ids) == len(st.session_state.player_queue):
-            st.session_state.player_queue = new_queue_ids
-            st.session_state.current_turn_player = 0 # ปักธงให้คนแรกในคิวเล่นต่อ
-            st.rerun()
-    current_player_name = player_dict.get(active_player_id, "Unknown")
-else:
-    st.warning("ไม่มีผู้เล่นในระบบ")
+if st.session_state.player_queue and alive_id:
+    st.subheader("คิวผู้เล่น")
+    queue_visual = [f"**{player_dict[pid]['name']}**" if pid==active_player_id else f"{player_dict[pid]['name']}" for pid in st.session_state.player_queue]
+    st.markdown(" -> ".join(queue_visual))
+     
+    if st.button("reverse", use_container_width=True):
+        st.session_state.player_queue.reverse()
+        st.session_state.current_turn_player = 0 # ปักธงให้คนแรกในคิวเล่นต่อ
+        st.rerun()
             
 # ----------------------------------------
 #             input new word 
@@ -231,9 +238,10 @@ if st.session_state.pending_action:
             st.rerun()
     with deny:
         if st.button("นี่ไม่ใช่คำนาม", type="secondary", use_container_width=True):
-            res_text = db.killed_check_score(act["player_id"], top=TOP, top_point=TOP_POINT, winner_point=WINNER_POINT)
+            res_text,_ = db.killed_check_score(act["player_id"], top=TOP, top_point=TOP_POINT, winner_point=WINNER_POINT)
             st.session_state.game_alert = res_text
             st.session_state.pending_action = None
+            
             sync_players_turn(shift=False) 
             st.rerun()
             
